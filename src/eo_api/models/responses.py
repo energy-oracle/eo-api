@@ -305,3 +305,64 @@ class DailyCarbonSummaryResponse(BaseModel):
 
     data: list[DailyCarbonSummary]
     count: int
+
+
+# ============== Renewable Generation ==============
+
+
+class RenewableGenerationIndex(BaseModel):
+    """Renewable generation index for REGO supply estimation."""
+
+    period: str = Field(description="YYYY-MM format")
+    start_date: date
+    end_date: date
+
+    # Renewable breakdown (percentages)
+    total_renewable_pct: Decimal = Field(description="Total renewable %")
+    wind_pct: Decimal
+    solar_pct: Decimal
+    hydro_pct: Decimal
+    biomass_pct: Decimal
+
+    # Comparison
+    vs_previous_month_pct: Decimal | None = Field(
+        default=None,
+        description="Change vs previous month"
+    )
+
+    # REGO supply indicator
+    estimated_rego_supply: str = Field(
+        description="low (<30%), medium (30-50%), high (>50%)"
+    )
+
+    settlement_periods: int
+    note: str = "Higher renewable generation typically increases REGO certificate supply"
+
+
+# ============== Green Premium ==============
+
+
+class GreenPremium(BaseModel):
+    """Green premium analysis - price difference based on renewable %."""
+
+    period: str = Field(description="YYYY-MM format")
+    start_date: date
+    end_date: date
+
+    # Green periods: renewable > 50%
+    green_price_avg: Decimal = Field(description="Average price when renewable > 50%")
+    green_periods: int
+
+    # Brown periods: renewable <= 50%
+    brown_price_avg: Decimal = Field(description="Average price when renewable <= 50%")
+    brown_periods: int
+
+    # Premium calculation
+    green_premium: Decimal = Field(description="green_avg - brown_avg (negative = discount)")
+    green_premium_pct: Decimal = Field(description="Premium as percentage of brown price")
+
+    # Threshold used
+    renewable_threshold: int = Field(default=50, description="% threshold for green/brown")
+    definition: str = "Green = periods where renewable generation > 50%"
+
+    unit: str = "GBP/MWh"

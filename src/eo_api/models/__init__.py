@@ -25,6 +25,9 @@ from .responses import (
     CarbonWeightedPrice,
     DailyCarbonSummary,
     DailyCarbonSummaryResponse,
+    # Renewable/Green analytics
+    RenewableGenerationIndex,
+    GreenPremium,
 )
 
 __all__ = [
@@ -52,4 +55,7 @@ __all__ = [
     "CarbonWeightedPrice",
     "DailyCarbonSummary",
     "DailyCarbonSummaryResponse",
+    # Renewable/Green analytics
+    "RenewableGenerationIndex",
+    "GreenPremium",
 ]

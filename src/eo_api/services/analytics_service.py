@@ -15,6 +15,8 @@ from ..models import (
     CarbonWeightedPrice,
     DailyCarbonSummary,
     DailyCarbonSummaryResponse,
+    RenewableGenerationIndex,
+    GreenPremium,
 )
 
 
@@ -468,3 +470,216 @@ class AnalyticsService:
             )
 
         return DailyCarbonSummaryResponse(data=summaries, count=len(summaries))
+
+    # ============== Renewable Generation Index ==============
+
+    def get_renewable_generation_index(
+        self, year: int, month: int
+    ) -> RenewableGenerationIndex:
+        """Calculate renewable generation index for a month."""
+        # Calculate date range for the month
+        from_date = date(year, month, 1)
+        if month == 12:
+            to_date = date(year + 1, 1, 1) - timedelta(days=1)
+        else:
+            to_date = date(year, month + 1, 1) - timedelta(days=1)
+
+        # Get fuel mix for the month
+        start_dt = datetime.combine(from_date, datetime.min.time())
+        end_dt = datetime.combine(to_date, datetime.min.time()) + timedelta(days=1)
+
+        fuel_response = (
+            self.db.table("fuel_mix")
+            .select("datetime, wind, solar, hydro, biomass, gas, nuclear, coal")
+            .gte("datetime", start_dt.isoformat())
+            .lt("datetime", end_dt.isoformat())
+            .execute()
+        )
+
+        if not fuel_response.data:
+            raise ValueError(f"No fuel mix data found for {year}-{month:02d}")
+
+        # Calculate averages
+        wind_total = 0.0
+        solar_total = 0.0
+        hydro_total = 0.0
+        biomass_total = 0.0
+        count = 0
+
+        for row in fuel_response.data:
+            wind_total += float(row.get("wind") or 0)
+            solar_total += float(row.get("solar") or 0)
+            hydro_total += float(row.get("hydro") or 0)
+            biomass_total += float(row.get("biomass") or 0)
+            count += 1
+
+        wind_avg = wind_total / count if count > 0 else 0
+        solar_avg = solar_total / count if count > 0 else 0
+        hydro_avg = hydro_total / count if count > 0 else 0
+        biomass_avg = biomass_total / count if count > 0 else 0
+        total_renewable = wind_avg + solar_avg + hydro_avg + biomass_avg
+
+        # Classify REGO supply
+        if total_renewable < 30:
+            rego_supply = "low"
+        elif total_renewable < 50:
+            rego_supply = "medium"
+        else:
+            rego_supply = "high"
+
+        # Calculate vs previous month
+        vs_previous: Decimal | None = None
+        if month == 1:
+            prev_year, prev_month = year - 1, 12
+        else:
+            prev_year, prev_month = year, month - 1
+
+        try:
+            prev_from = date(prev_year, prev_month, 1)
+            if prev_month == 12:
+                prev_to = date(prev_year + 1, 1, 1) - timedelta(days=1)
+            else:
+                prev_to = date(prev_year, prev_month + 1, 1) - timedelta(days=1)
+
+            prev_start_dt = datetime.combine(prev_from, datetime.min.time())
+            prev_end_dt = datetime.combine(prev_to, datetime.min.time()) + timedelta(days=1)
+
+            prev_response = (
+                self.db.table("fuel_mix")
+                .select("wind, solar, hydro, biomass")
+                .gte("datetime", prev_start_dt.isoformat())
+                .lt("datetime", prev_end_dt.isoformat())
+                .execute()
+            )
+
+            if prev_response.data:
+                prev_total = 0.0
+                prev_count = 0
+                for row in prev_response.data:
+                    prev_total += (
+                        float(row.get("wind") or 0)
+                        + float(row.get("solar") or 0)
+                        + float(row.get("hydro") or 0)
+                        + float(row.get("biomass") or 0)
+                    )
+                    prev_count += 1
+                if prev_count > 0:
+                    prev_avg = prev_total / prev_count
+                    if prev_avg > 0:
+                        vs_previous = Decimal(
+                            str(round((total_renewable - prev_avg) / prev_avg * 100, 1))
+                        )
+        except Exception:
+            pass  # No previous month data available
+
+        return RenewableGenerationIndex(
+            period=f"{year}-{month:02d}",
+            start_date=from_date,
+            end_date=to_date,
+            total_renewable_pct=Decimal(str(round(total_renewable, 1))),
+            wind_pct=Decimal(str(round(wind_avg, 1))),
+            solar_pct=Decimal(str(round(solar_avg, 1))),
+            hydro_pct=Decimal(str(round(hydro_avg, 1))),
+            biomass_pct=Decimal(str(round(biomass_avg, 1))),
+            vs_previous_month_pct=vs_previous,
+            estimated_rego_supply=rego_supply,
+            settlement_periods=count,
+        )
+
+    # ============== Green Premium ==============
+
+    def get_green_premium(
+        self, year: int, month: int, renewable_threshold: int = 50
+    ) -> GreenPremium:
+        """Calculate green premium - price difference based on renewable %."""
+        # Calculate date range for the month
+        from_date = date(year, month, 1)
+        if month == 12:
+            to_date = date(year + 1, 1, 1) - timedelta(days=1)
+        else:
+            to_date = date(year, month + 1, 1) - timedelta(days=1)
+
+        # Get system prices
+        prices_response = (
+            self.db.table("system_prices")
+            .select("settlement_date, settlement_period, price")
+            .gte("settlement_date", from_date.isoformat())
+            .lte("settlement_date", to_date.isoformat())
+            .execute()
+        )
+
+        if not prices_response.data:
+            raise ValueError(f"No price data found for {year}-{month:02d}")
+
+        # Get fuel mix
+        start_dt = datetime.combine(from_date, datetime.min.time())
+        end_dt = datetime.combine(to_date, datetime.min.time()) + timedelta(days=1)
+
+        fuel_response = (
+            self.db.table("fuel_mix")
+            .select("datetime, wind, solar, hydro, biomass")
+            .gte("datetime", start_dt.isoformat())
+            .lt("datetime", end_dt.isoformat())
+            .execute()
+        )
+
+        # Index fuel mix by datetime (rounded to half-hour)
+        fuel_index: dict[datetime, float] = {}
+        for row in fuel_response.data:
+            dt = datetime.fromisoformat(row["datetime"].replace("Z", "+00:00"))
+            # Round to nearest half hour
+            minute = 0 if dt.minute < 30 else 30
+            key = dt.replace(minute=minute, second=0, microsecond=0, tzinfo=None)
+            renewable_pct = (
+                float(row.get("wind") or 0)
+                + float(row.get("solar") or 0)
+                + float(row.get("hydro") or 0)
+                + float(row.get("biomass") or 0)
+            )
+            fuel_index[key] = renewable_pct
+
+        # Categorize prices by renewable %
+        green_prices: list[float] = []
+        brown_prices: list[float] = []
+
+        for row in prices_response.data:
+            d = date.fromisoformat(row["settlement_date"])
+            period = row["settlement_period"]
+            price = float(row["price"])
+
+            # Convert settlement period to datetime
+            hour = (period - 1) // 2
+            minute = 30 if (period - 1) % 2 else 0
+            dt = datetime.combine(d, datetime.min.time()).replace(
+                hour=hour, minute=minute
+            )
+
+            # Look up renewable %
+            renewable_pct = fuel_index.get(dt, None)
+            if renewable_pct is not None:
+                if renewable_pct > renewable_threshold:
+                    green_prices.append(price)
+                else:
+                    brown_prices.append(price)
+
+        # Calculate averages
+        if not green_prices and not brown_prices:
+            raise ValueError(f"No matched price/fuel data for {year}-{month:02d}")
+
+        green_avg = mean(green_prices) if green_prices else 0
+        brown_avg = mean(brown_prices) if brown_prices else 0
+        premium = green_avg - brown_avg
+        premium_pct = (premium / brown_avg * 100) if brown_avg else 0
+
+        return GreenPremium(
+            period=f"{year}-{month:02d}",
+            start_date=from_date,
+            end_date=to_date,
+            green_price_avg=Decimal(str(round(green_avg, 2))),
+            green_periods=len(green_prices),
+            brown_price_avg=Decimal(str(round(brown_avg, 2))),
+            brown_periods=len(brown_prices),
+            green_premium=Decimal(str(round(premium, 2))),
+            green_premium_pct=Decimal(str(round(premium_pct, 1))),
+            renewable_threshold=renewable_threshold,
+        )

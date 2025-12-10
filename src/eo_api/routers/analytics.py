@@ -12,6 +12,8 @@ from ..models import (
     PriceStatistics,
     CarbonWeightedPrice,
     DailyCarbonSummaryResponse,
+    RenewableGenerationIndex,
+    GreenPremium,
 )
 from ..services import AnalyticsService
 
@@ -171,3 +173,71 @@ def get_daily_carbon_summary(
         raise HTTPException(status_code=400, detail="Date range cannot exceed 90 days")
 
     return service.get_daily_carbon_summary(from_date, to_date)
+
+
+# ============== Renewable Analytics ==============
+
+
+@router.get("/renewable/generation/{year}/{month}", response_model=RenewableGenerationIndex)
+def get_renewable_generation_index(
+    year: int,
+    month: int,
+    service: AnalyticsService = Depends(get_analytics_service),
+):
+    """
+    Get renewable generation index for a month.
+
+    Calculates:
+    - Total renewable % (wind + solar + hydro + biomass)
+    - Breakdown by source
+    - Comparison vs previous month
+    - REGO supply indicator (low/medium/high)
+
+    Useful for:
+    - REGO market supply estimation
+    - Renewable generation tracking
+    - ESG reporting
+    - PPA performance analysis
+    """
+    if month < 1 or month > 12:
+        raise HTTPException(status_code=400, detail="Month must be between 1 and 12")
+
+    try:
+        return service.get_renewable_generation_index(year, month)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/prices/green-premium/{year}/{month}", response_model=GreenPremium)
+def get_green_premium(
+    year: int,
+    month: int,
+    renewable_threshold: int = Query(default=50, description="% threshold for green periods"),
+    service: AnalyticsService = Depends(get_analytics_service),
+):
+    """
+    Get green premium analysis for a month.
+
+    Calculates the price difference between:
+    - **Green periods:** When renewable generation > threshold %
+    - **Brown periods:** When renewable generation <= threshold %
+
+    A **negative premium** means electricity is cheaper during high renewable periods
+    (supply > demand effect).
+
+    Useful for:
+    - ESG pricing strategies
+    - Green tariff design
+    - Renewable value analysis
+    - Carbon-aware scheduling ROI
+    """
+    if month < 1 or month > 12:
+        raise HTTPException(status_code=400, detail="Month must be between 1 and 12")
+
+    if renewable_threshold < 0 or renewable_threshold > 100:
+        raise HTTPException(status_code=400, detail="Threshold must be between 0 and 100")
+
+    try:
+        return service.get_green_premium(year, month, renewable_threshold)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
